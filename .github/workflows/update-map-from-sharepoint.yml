@@ -3,8 +3,8 @@ name: Update map data from SharePoint
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "0 7 * * *"
-    - cron: "0 8 * * *"
+    - cron: '0 7 * * *'
+    - cron: '0 8 * * *'
 
 permissions:
   contents: write
@@ -23,49 +23,10 @@ jobs:
           GRAPH_TENANT_ID: ${{ secrets.GRAPH_TENANT_ID }}
           GRAPH_CLIENT_ID: ${{ secrets.GRAPH_CLIENT_ID }}
           GRAPH_CLIENT_SECRET: ${{ secrets.GRAPH_CLIENT_SECRET }}
-          # support either URL or hostname/path
           SP_SITE_URL: ${{ secrets.SP_SITE_URL }}
-          SP_SITE_HOSTNAME: ${{ secrets.SP_SITE_HOSTNAME }}
-          SP_SITE_PATH: ${{ secrets.SP_SITE_PATH }}
           SP_LIST_NAME: ${{ secrets.SP_LIST_NAME }}
         run: |
-          $ErrorActionPreference = 'Stop'
-
-          # ---- Resolve site host + path from either SP_SITE_URL or HOSTNAME/PATH ----
-          function Resolve-SiteParts {
-            param(
-              [string]$Url,
-              [string]$Host,
-              [string]$Path
-            )
-            if ($Url) {
-              try {
-                $u = [Uri]$Url
-                $host = $u.Host
-                $path = $u.AbsolutePath
-                if (-not $path.StartsWith("/")) { $path = "/$path" }
-                return @{ Host = $host; Path = $path }
-              } catch {
-                throw "SP_SITE_URL looks invalid: '$Url'"
-              }
-            }
-            if ($Host -and $Path) {
-              $p = $Path
-              if (-not $p.StartsWith("/")) { $p = "/$p" }
-              return @{ Host = $Host; Path = $p }
-            }
-            throw "Provide either SP_SITE_URL, or both SP_SITE_HOSTNAME and SP_SITE_PATH as repository secrets."
-          }
-
-          $siteParts = Resolve-SiteParts -Url $env:SP_SITE_URL -Host $env:SP_SITE_HOSTNAME -Path $env:SP_SITE_PATH
-          $SiteHost = $siteParts.Host
-          $SitePath = $siteParts.Path
-
-          if (-not $env:SP_LIST_NAME) { $env:SP_LIST_NAME = "Properties_by_RVP" }
-
-          Write-Host "Using site host: $SiteHost"
-          Write-Host "Using site path: $SitePath"
-          Write-Host "Using list name: $($env:SP_LIST_NAME)"
+          $ErrorActionPreference = "Stop"
 
           # ---- Get Graph token ----
           $body = @{
@@ -74,39 +35,36 @@ jobs:
             client_secret = $env:GRAPH_CLIENT_SECRET
             grant_type    = "client_credentials"
           }
-          $tok = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$($env:GRAPH_TENANT_ID)/oauth2/v2.0/token" -Body $body -ErrorAction Stop
+          $tok = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$env:GRAPH_TENANT_ID/oauth2/v2.0/token" -Body $body
           $H = @{ Authorization = "Bearer $($tok.access_token)" }
 
-          # ---- Resolve site + list ----
-          $siteUri = "https://graph.microsoft.com/v1.0/sites/$SiteHost:$SitePath"
-          $site = Invoke-RestMethod -Headers $H -Uri $siteUri -ErrorAction Stop
+          # ---- Resolve Site ----
+          $u = [uri]$env:SP_SITE_URL
+          $site = Invoke-RestMethod -Headers $H -Uri "https://graph.microsoft.com/v1.0/sites/$($u.Host):$($u.AbsolutePath)"
           $siteId = $site.id
-          if (-not $siteId) { throw "Could not resolve site ID from $siteUri" }
 
+          # ---- Resolve List ----
           $listName = $env:SP_LIST_NAME
-          $lists = Invoke-RestMethod -Headers $H -Uri "https://graph.microsoft.com/v1.0/sites/$siteId/lists?`$filter=displayName eq '$listName'&`$select=id,displayName" -ErrorAction Stop
-          if(-not $lists.value){ throw "List '$listName' not found at $SiteHost$SitePath" }
+          $lists = Invoke-RestMethod -Headers $H -Uri "https://graph.microsoft.com/v1.0/sites/$siteId/lists?`$filter=displayName eq '$listName'&`$select=id,displayName"
+          if(-not $lists.value){ throw "List '$listName' not found at $($u.Host)$($u.AbsolutePath)" }
           $listId = $lists.value[0].id
 
-          # ---- Pull all items (expand fields) ----
+          # ---- Pull items ----
           $items = @()
           $url = "https://graph.microsoft.com/v1.0/sites/$siteId/lists/$listId/items?`$expand=fields&`$top=999"
           while($url){
-            $r = Invoke-RestMethod -Headers $H -Uri $url -ErrorAction Stop
+            $r = Invoke-RestMethod -Headers $H -Uri $url
             $items += $r.value
             $url = $r.'@odata.nextLink'
           }
 
-          # ---- First run helper: dump detected internal field names ----
+          # ---- Dump detected fields ----
           if($items.Count -gt 0){
-            ($items[0].fields | Get-Member -MemberType NoteProperty | Select -ExpandProperty Name |
-              Sort-Object) | Out-File -Encoding utf8 -FilePath "$PWD/detected_sharepoint_fields.txt"
-            Write-Host "Wrote detected_sharepoint_fields.txt"
-          } else {
-            Write-Warning "No list items returned."
+            ($items[0].fields | Get-Member -MemberType NoteProperty | Select -ExpandProperty Name | Sort-Object) |
+              Out-File -Encoding utf8 -FilePath "$PWD/detected_sharepoint_fields.txt"
           }
 
-          # ---- Map SharePoint fields -> JSON consumed by the site ----
+          # ---- Map to JSON schema ----
           function Map-Row($f){
             [pscustomobject]@{
               name           = $f.Title
@@ -126,16 +84,12 @@ jobs:
               rvp            = $f.field_14
               lat            = [double]($f.Latitude   ?? 0)
               lng            = [double]($f.Longitude  ?? 0)
-              owner          = $f.OWNER   # <-- your new column
+              owner          = $f.Owner ?? $f.OWNER
             }
           }
 
-          $out = @()
-          foreach($it in $items){
-            $out += Map-Row $it.fields
-          }
+          $out = foreach($it in $items){ Map-Row $it.fields }
 
-          # ---- Backup, then write JSON ----
           $jsonFile = "final_properties_with_coords_and_rvp.json"
           if (Test-Path $jsonFile) {
             $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -144,7 +98,7 @@ jobs:
           $out | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 -Path $jsonFile
           Write-Host "Wrote $jsonFile with $($out.Count) rows."
 
-      - name: Commit JSON and helper file
+      - name: Commit JSON
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Auto-update: final_properties_with_coords_and_rvp.json from SharePoint"
@@ -152,5 +106,5 @@ jobs:
             final_properties_with_coords_and_rvp.json
             backup_final_properties_*.json
             detected_sharepoint_fields.txt
-          commit_user_name: ${{ secrets.COMMIT_USER_NAME }}
-          commit_user_email: ${{ secrets.COMMIT_USER_EMAIL }}
+          commit_user_name: ${{ secrets.COMMIT_USER_NAME || 'Gateway Map Bot' }}
+          commit_user_email: ${{ secrets.COMMIT_USER_EMAIL || 'bot@example.com' }}
