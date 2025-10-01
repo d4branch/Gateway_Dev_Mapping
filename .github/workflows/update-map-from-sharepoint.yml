@@ -86,6 +86,8 @@ jobs:
               rvp            = $f.field_14         # RVP
               lat            = [double]$f.Latitude
               lng            = [double]$f.Longitude
+              owner          = $f.Owner
+
             }
           }
 
