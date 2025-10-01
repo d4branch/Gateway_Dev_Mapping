@@ -86,7 +86,7 @@ jobs:
               rvp            = $f.field_14         # RVP
               lat            = [double]$f.Latitude
               lng            = [double]$f.Longitude
-              owner          = $f.Owner
+              owner          = $f.OWNER            # if detected_sharepoint_fields.txt shows OWNER
 
             }
           }
