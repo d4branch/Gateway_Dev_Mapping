@@ -1,10 +1,10 @@
 name: Update map data from SharePoint
 
 on:
-  workflow_dispatch: {}            # manual runs
+  workflow_dispatch: {}
   schedule:
-    - cron: "0 7 * * *"           # ~2:00 AM Central during CDT (UTC-5)
-    - cron: "0 8 * * *"           # ~2:00 AM Central during CST (UTC-6)
+    - cron: "0 7 * * *"   # ~2:00 AM Central during CDT (UTC-5)
+    - cron: "0 8 * * *"   # ~2:00 AM Central during CST (UTC-6)
 
 permissions:
   contents: write
@@ -20,12 +20,17 @@ jobs:
       - name: Pull SharePoint list and build JSON
         shell: pwsh
         env:
-          GRAPH_TENANT_ID: ${{ secrets.GRAPH_TENANT_ID }}
-          GRAPH_CLIENT_ID: ${{ secrets.GRAPH_CLIENT_ID }}
+          GRAPH_TENANT_ID:  ${{ secrets.GRAPH_TENANT_ID }}
+          GRAPH_CLIENT_ID:  ${{ secrets.GRAPH_CLIENT_ID }}
           GRAPH_CLIENT_SECRET: ${{ secrets.GRAPH_CLIENT_SECRET }}
-          SP_SITE_HOSTNAME: ${{ secrets.SP_SITE_HOSTNAME }}
-          SP_SITE_PATH: ${{ secrets.SP_SITE_PATH }}
+          SP_SITE_URL:      ${{ secrets.SP_SITE_URL }}      # e.g. https://gatewaymgt.sharepoint.com/sites/Intranet
+          SP_LIST_NAME:     ${{ secrets.SP_LIST_NAME }}     # e.g. Properties_by_RVP
         run: |
+          # ---- Derive hostname/path from SP_SITE_URL so we don't need extra secrets ----
+          $u = [uri]$env:SP_SITE_URL
+          $siteHostname = $u.Host
+          $sitePath     = $u.AbsolutePath   # e.g. /sites/Intranet
+
           # ---- Get Graph token (client credentials) ----
           $body = @{
             client_id     = $env:GRAPH_CLIENT_ID
@@ -37,13 +42,13 @@ jobs:
           $H = @{ Authorization = "Bearer $($tok.access_token)" }
 
           # ---- Resolve site + list ----
-          $siteUri = "https://graph.microsoft.com/v1.0/sites/$($env:SP_SITE_HOSTNAME):$($env:SP_SITE_PATH)"
-          $site = Invoke-RestMethod -Headers $H -Uri $siteUri
-          $siteId = $site.id
+          $siteUri = "https://graph.microsoft.com/v1.0/sites/$siteHostname:$sitePath"
+          $site    = Invoke-RestMethod -Headers $H -Uri $siteUri
+          $siteId  = $site.id
 
-          $listName = "Properties_by_RVP"
+          $listName = $env:SP_LIST_NAME
           $lists = Invoke-RestMethod -Headers $H -Uri "https://graph.microsoft.com/v1.0/sites/$siteId/lists?`$filter=displayName eq '$listName'&`$select=id,displayName"
-          if(-not $lists.value){ throw "List '$listName' not found at $($env:SP_SITE_HOSTNAME)$($env:SP_SITE_PATH)" }
+          if(-not $lists.value){ throw "List '$listName' not found at $($env:SP_SITE_URL)" }
           $listId = $lists.value[0].id
 
           # ---- Pull all items (expand fields) ----
@@ -55,20 +60,20 @@ jobs:
             $url = $r.'@odata.nextLink'
           }
 
-          # ---- First run helper: dump detected internal field names for mapping sanity ----
+          # ---- First run helper: dump detected internal field names ----
           if($items.Count -gt 0){
-            ($items[0].fields | Get-Member -MemberType NoteProperty | Select -ExpandProperty Name) `
-              | Sort-Object | Out-File -Encoding utf8 -FilePath "$PWD/detected_sharepoint_fields.txt"
+            ($items[0].fields | Get-Member -MemberType NoteProperty | Select -ExpandProperty Name |
+              Sort-Object) | Out-File -Encoding utf8 -FilePath "$PWD/detected_sharepoint_fields.txt"
           }
 
-          # ---- Map SharePoint fields -> map schema your app.js expects ----
+          # ---- Map SharePoint fields -> schema your app.js expects (adjust as needed) ----
           function Map-Row($f){
             [pscustomobject]@{
               name           = $f.Title            # Property
               type           = $f.TYPE             # Type
               units          = $f.field_2          # Units
               manager        = $f.field_3          # Manager
-              assistant_mgr  = $f.field_4          # Assistant Mgr
+              assistant_mgr  = $f.field_4          # Assistant MGR
               compliance     = $f.field_5          # Compliance Specialist
               address        = $f.field_6          # Street
               city           = $f.field_7
