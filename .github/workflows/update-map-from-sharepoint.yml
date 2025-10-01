@@ -66,30 +66,31 @@ jobs:
               Sort-Object) | Out-File -Encoding utf8 -FilePath "$PWD/detected_sharepoint_fields.txt"
           }
 
-          # ---- Map SharePoint fields -> schema your app.js expects (adjust as needed) ----
-          function Map-Row($f){
-            [pscustomobject]@{
-              name           = $f.Title            # Property
-              type           = $f.TYPE             # Type
-              units          = $f.field_2          # Units
-              manager        = $f.field_3          # Manager
-              assistant_mgr  = $f.field_4          # Assistant MGR
-              compliance     = $f.field_5          # Compliance Specialist
-              address        = $f.field_6          # Street
-              city           = $f.field_7
-              state          = $f.field_8
-              zip            = $f.field_9
-              office_phone   = $f.field_10         # Office
-              fax            = $f.field_11
-              manager_email  = $f.field_12
-              rpm            = $f.field_13         # RPM
-              rvp            = $f.field_14         # RVP
-              lat            = [double]$f.Latitude
-              lng            = [double]$f.Longitude
-              owner          = $f.OWNER            # if detected_sharepoint_fields.txt shows OWNER
+# ---- Map SharePoint fields -> schema your app.js expects (adjust as needed) ----
+function Map-Row($f){
+  [pscustomobject]@{
+    name           = $f.Title
+    type           = $f.TYPE
+    units          = $f.field_2
+    manager        = $f.field_3
+    assistant_mgr  = $f.field_4
+    compliance     = $f.field_5
+    address        = $f.field_6
+    city           = $f.field_7
+    state          = $f.field_8
+    zip            = $f.field_9
+    office_phone   = $f.field_10
+    fax            = $f.field_11
+    manager_email  = $f.field_12
+    rpm            = $f.field_13
+    rvp            = $f.field_14
+    lat            = [double]$f.Latitude
+    lng            = [double]$f.Longitude
+    # Fallbacks so any casing works (PowerShell 7 is fine with ??)
+    owner          = $f.Owner ?? $f.OWNER ?? $f.owner
+  }
+}
 
-            }
-          }
 
           $out = foreach($it in $items){ Map-Row $it.fields }
 
